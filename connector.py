@@ -399,3 +399,10 @@ def info() -> Dict[str, Any]:
             "XAUUSD"
         ],
 }
+@app.get("/debug/auth")
+def debug_auth():
+    return {
+        "api_key_configured": bool(API_KEY),
+        "mode": MODE,
+        "status": "OK"
+    }
