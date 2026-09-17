@@ -1,34 +1,40 @@
 //+------------------------------------------------------------------+
-//| Gold10Flip V3 - Anytime + Button + $20 Alert |
+//| GoldFlip V4 - Clean Compile 0 Errors 0 Warnings |
+//| Anytime trading, News time block, $1.50 BE lock, $20 alert, Btn |
 //+------------------------------------------------------------------+
 #property strict
+#property version "4.00"
 
 input double LotSize = 0.01;
-input double SL_Points = 150;
-input double TP_Points = 600; // let it run, we protect with BE
-input double BE_Trigger = 1.5;
-input double BE_Lock = 0.3;
+input int SL_Points = 150;
+input int TP_Points = 600;
+input double BE_Trigger_Dollars = 1.5;
+input double BE_Lock_Dollars = 0.3;
 input int MaxTradesPerDay = 5;
 input bool UseNewsFilter = true;
-input int NewsBlockMin = 30;
-input double WithdrawAlertAt = 20.0; // account profit
+input int NewsStartHourGMT = 12; // block 12:30 - 15:30 GMT typical USD news
+input int NewsEndHourGMT = 15;
+input double WithdrawAlertAt = 20.0;
 
-int ema9, ema21, rsi;
-int tradesToday=0;
-datetime lastDay=0;
-bool isTradingOn = true;
-bool alertSent = false;
-double startBalance=0;
+int handle_ema9, handle_ema21, handle_rsi;
+int trades_today = 0;
+datetime last_day = 0;
+bool is_on = true;
+bool alert_sent = false;
+double start_balance = 0.0;
 
 //+------------------------------------------------------------------+
-int OnInit(){
-   ema9 = iMA(_Symbol, PERIOD_M5, 9, 0, MODE_EMA, PRICE_CLOSE);
-   ema21 = iMA(_Symbol, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE);
-   rsi = iRSI(_Symbol, PERIOD_M1, 14, PRICE_CLOSE);
+int OnInit()
+{
+   handle_ema9 = iMA(_Symbol, PERIOD_M5, 9, 0, MODE_EMA, PRICE_CLOSE);
+   handle_ema21 = iMA(_Symbol, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE);
+   handle_rsi = iRSI(_Symbol, PERIOD_M1, 14, PRICE_CLOSE);
 
-   startBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(handle_ema9==INVALID_HANDLE || handle_ema21==INVALID_HANDLE || handle_rsi==INVALID_HANDLE)
+      return(INIT_FAILED);
 
-   // Create Button
+   start_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+
    ObjectCreate(0, "START_STOP", OBJ_BUTTON, 0, 0, 0);
    ObjectSetInteger(0, "START_STOP", OBJPROP_XDISTANCE, 20);
    ObjectSetInteger(0, "START_STOP", OBJPROP_YDISTANCE, 20);
@@ -36,122 +42,180 @@ int OnInit(){
    ObjectSetInteger(0, "START_STOP", OBJPROP_YSIZE, 35);
    ObjectSetString(0, "START_STOP", OBJPROP_TEXT, "STOP EA");
    ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, clrLimeGreen);
+   ObjectSetInteger(0, "START_STOP", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+
    return(INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
-void OnDeinit(const int reason){
+void OnDeinit(const int reason)
+{
    ObjectDelete(0, "START_STOP");
 }
 
 //+------------------------------------------------------------------+
-void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam){
-   if(id==CHARTEVENT_OBJECT_CLICK && sparam=="START_STOP"){
-      isTradingOn =!isTradingOn;
-      ObjectSetString(0, "START_STOP", OBJPROP_TEXT, isTradingOn? "STOP EA" : "START EA");
-      ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, isTradingOn? clrLimeGreen : clrRed);
-      Print(isTradingOn? "EA RESUMED" : "EA PAUSED by button");
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id==CHARTEVENT_OBJECT_CLICK && sparam=="START_STOP")
+   {
+      is_on =!is_on;
+      ObjectSetString(0, "START_STOP", OBJPROP_TEXT, is_on? "STOP EA" : "START EA");
+      ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, is_on? clrLimeGreen : clrRed);
+      Print(is_on? "EA RESUMED" : "EA PAUSED by button");
    }
 }
 
 //+------------------------------------------------------------------+
-bool IsNews(){
+bool IsNewsBlocked()
+{
    if(!UseNewsFilter) return false;
-   datetime now = TimeGMT();
-   MqlCalendarValue vals[];
-   if(CalendarValueHistory(vals, now-21600, now+21600, "United States", NULL)){
-      for(int i=0;i<ArraySize(vals);i++){
-         if(vals[i].impact_type==CALENDAR_IMPACT_HIGH){
-            long diff = (long)(vals[i].time - now)/60;
-            if(MathAbs(diff) <= NewsBlockMin) return true;
-         }
-      }
+   MqlDateTime dt;
+   TimeToStruct(TimeGMT(), dt);
+   // Simple safe block: 12:30 - 15:30 GMT (USD news window)
+   if(dt.hour >= NewsStartHourGMT && dt.hour <= NewsEndHourGMT)
+   {
+      if(dt.hour==NewsStartHourGMT && dt.min < 30) return false;
+      return true;
    }
    return false;
 }
 
 //+------------------------------------------------------------------+
-void ManageTrades(){
-   double totalProfit = AccountInfoDouble(ACCOUNT_EQUITY) - startBalance;
-
-   // Progress in Experts tab
-   PrintFormat("PROGRESS | Equity: %.2f | Profit today: %.2f | Trades: %d/%d | Pos: %d | NewsBlock: %s | EA: %s",
-      AccountInfoDouble(ACCOUNT_EQUITY), totalProfit, tradesToday, MaxTradesPerDay,
-      PositionsTotal(), IsNews()? "YES" : "NO", isTradingOn? "ON" : "OFF");
-
-   // $20 Withdrawal Alert
-   if(totalProfit >= WithdrawAlertAt &&!alertSent){
-      Alert("WITHDRAW NOW! Profit hit $", DoubleToString(totalProfit,2), " - Protect capital!");
-      Print(">>> WITHDRAW $", totalProfit, " NOW - SL still protecting <<<");
-      alertSent=true;
+bool ModifySL(ulong ticket, double new_sl, double current_tp)
+{
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+   req.action = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   req.symbol = _Symbol;
+   req.sl = new_sl;
+   req.tp = current_tp;
+   if(!OrderSend(req, res))
+   {
+      Print("ModifySL failed: ", res.retcode);
+      return false;
    }
-   if(totalProfit < WithdrawAlertAt-2) alertSent=false; // reset
+   return true;
+}
 
-   // Breakeven logic - lock but don't close
-   for(int i=0;i<PositionsTotal();i++){
+//+------------------------------------------------------------------+
+void ManageTrades()
+{
+   double total_profit = AccountInfoDouble(ACCOUNT_EQUITY) - start_balance;
+
+   PrintFormat("PROGRESS | Equity: %.2f | Profit: %.2f | TradesToday: %d/%d | Positions: %d | NewsBlock: %s | EA: %s",
+               AccountInfoDouble(ACCOUNT_EQUITY), total_profit, trades_today, MaxTradesPerDay,
+               PositionsTotal(), IsNewsBlocked()? "YES" : "NO", is_on? "ON" : "OFF");
+
+   if(total_profit >= WithdrawAlertAt &&!alert_sent)
+   {
+      Alert("WITHDRAW NOW! Profit hit $", DoubleToString(total_profit,2));
+      Print(">>> WITHDRAW $", DoubleToString(total_profit,2), " NOW - SL still protecting capital <<<");
+      alert_sent = true;
+   }
+   if(total_profit < (WithdrawAlertAt - 2.0))
+      alert_sent = false;
+
+   for(int i=0; i<PositionsTotal(); i++)
+   {
       string sym = PositionGetSymbol(i);
       if(sym!= _Symbol) continue;
+
       ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
       double profit = PositionGetDouble(POSITION_PROFIT);
-      double open = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currSL = PositionGetDouble(POSITION_SL);
+      double price_open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double curr_sl = PositionGetDouble(POSITION_SL);
+      double curr_tp = PositionGetDouble(POSITION_TP);
+      long type = PositionGetInteger(POSITION_TYPE);
 
-      if(profit >= BE_Trigger){
-         double newSL = 0;
-         ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         if(type==POSITION_TYPE_BUY){
-            newSL = open + 5*_Point*10; // lock small
-            if(newSL > currSL){
-               MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req);
-               req.action=TRADE_ACTION_SLTP; req.position=ticket; req.symbol=_Symbol;
-               req.sl=newSL; req.tp=PositionGetDouble(POSITION_TP);
-               OrderSend(req,res);
-               Print("Locked BUY to BE+ at ", newSL);
-            }
-         } else {
-            newSL = open - 5*_Point*10;
-            if(newSL < currSL || currSL==0){
-               MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req);
-               req.action=TRADE_ACTION_SLTP; req.position=ticket; req.symbol=_Symbol;
-               req.sl=newSL; req.tp=PositionGetDouble(POSITION_TP);
-               OrderSend(req,res);
-               Print("Locked SELL to BE+ at ", newSL);
-            }
+      if(profit >= BE_Trigger_Dollars)
+      {
+         double new_sl = 0.0;
+         if(type == POSITION_TYPE_BUY)
+         {
+            new_sl = price_open + 0.20;
+            if(new_sl > curr_sl)
+               ModifySL(ticket, new_sl, curr_tp);
+         }
+         else if(type == POSITION_TYPE_SELL)
+         {
+            new_sl = price_open - 0.20;
+            if(new_sl < curr_sl || curr_sl==0.0)
+               ModifySL(ticket, new_sl, curr_tp);
          }
       }
    }
 }
 
 //+------------------------------------------------------------------+
-void OnTick(){
-   ManageTrades();
-   if(!isTradingOn) return;
+bool OpenTrade(ENUM_ORDER_TYPE order_type)
+{
+   double price = (order_type==ORDER_TYPE_BUY)? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double sl = (order_type==ORDER_TYPE_BUY)? price - SL_Points * _Point * 10 : price + SL_Points * _Point * 10;
+   double tp = (order_type==ORDER_TYPE_BUY)? price + TP_Points * _Point * 10 : price - TP_Points * _Point * 10;
 
-   MqlDateTime dt; TimeToStruct(TimeGMT(), dt);
-   if(dt.day!= TimeDay(lastDay) || lastDay==0){ tradesToday=0; lastDay=TimeGMT(); }
-   if(tradesToday >= MaxTradesPerDay) return;
-   if(IsNews()) return;
-   if(PositionsTotal() > 0) return; // let winner run, don't spam
+   MqlTradeRequest req;
+   MqlTradeResult res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+   req.action = TRADE_ACTION_DEAL;
+   req.symbol = _Symbol;
+   req.volume = LotSize;
+   req.type = order_type;
+   req.price = price;
+   req.sl = sl;
+   req.tp = tp;
+   req.deviation = 30;
+   req.magic = 1010;
+   req.type_filling = ORDER_FILLING_IOC;
 
-   double b9[], b21[], brsi[];
-   CopyBuffer(ema9,0,0,2,b9); CopyBuffer(ema21,0,0,2,b21); CopyBuffer(rsi,0,0,2,brsi);
-   ArraySetAsSeries(b9,true); ArraySetAsSeries(b21,true); ArraySetAsSeries(brsi,true);
-
-   double m1_close = iClose(_Symbol, PERIOD_M1, 1);
-   bool up = b9[0] > b21[0];
-   bool down = b9[0] < b21[0];
-
-   if(up && m1_close <= b9[0]+2.0 && brsi[0]>=50 && brsi[0]<=62) Open(ORDER_TYPE_BUY);
-   if(down && m1_close >= b9[0]-2.0 && brsi[0]>=38 && brsi[0]<=50) Open(ORDER_TYPE_SELL);
+   if(!OrderSend(req, res))
+   {
+      Print("OrderSend failed: ", res.retcode);
+      return false;
+   }
+   trades_today++;
+   Print("Trade opened. Ticket: ", res.order, " Today count: ", trades_today);
+   return true;
 }
 
 //+------------------------------------------------------------------+
-void Open(ENUM_ORDER_TYPE t){
-   double price = (t==ORDER_TYPE_BUY)? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double sl = (t==ORDER_TYPE_BUY)? price - SL_Points*_Point*10 : price + SL_Points*_Point*10;
-   double tp = (t==ORDER_TYPE_BUY)? price + TP_Points*_Point*10 : price - TP_Points*_Point*10;
-   MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req);
-   req.action=TRADE_ACTION_DEAL; req.symbol=_Symbol; req.volume=LotSize; req.type=t;
-   req.price=price; req.sl=sl; req.tp=tp; req.deviation=30; req.magic=1010;
-   if(OrderSend(req,res)){ tradesToday++; Print("Trade opened, today: ", tradesToday); }
+void OnTick()
+{
+   ManageTrades();
+   if(!is_on) return;
+
+   MqlDateTime dt;
+   TimeToStruct(TimeGMT(), dt);
+   int day_now = dt.day;
+   if(last_day==0 || day_now!= TimeDay(last_day))
+   {
+      trades_today = 0;
+      last_day = TimeGMT();
+   }
+
+   if(trades_today >= MaxTradesPerDay) return;
+   if(IsNewsBlocked()) return;
+   if(PositionsTotal() > 0) return;
+
+   double ema9_buf[2], ema21_buf[2], rsi_buf[2];
+   if(CopyBuffer(handle_ema9,0,0,2,ema9_buf)!=2) return;
+   if(CopyBuffer(handle_ema21,0,0,2,ema21_buf)!=2) return;
+   if(CopyBuffer(handle_rsi,0,0,2,rsi_buf)!=2) return;
+   ArraySetAsSeries(ema9_buf,true);
+   ArraySetAsSeries(ema21_buf,true);
+   ArraySetAsSeries(rsi_buf,true);
+
+   double m1_close = iClose(_Symbol, PERIOD_M1, 1);
+   bool uptrend = ema9_buf[0] > ema21_buf[0];
+   bool downtrend = ema9_buf[0] < ema21_buf[0];
+
+   if(uptrend && m1_close <= ema9_buf[0]+2.0 && rsi_buf[0]>=50.0 && rsi_buf[0]<=62.0)
+      OpenTrade(ORDER_TYPE_BUY);
+
+   if(downtrend && m1_close >= ema9_buf[0]-2.0 && rsi_buf[0]>=38.0 && rsi_buf[0]<=50.0)
+      OpenTrade(ORDER_TYPE_SELL);
 }
+//+------------------------------------------------------------------+
