@@ -1,229 +1,258 @@
 //+------------------------------------------------------------------+
-//| GoldFlip V4 - Clean Compile 0 Errors 0 Warnings |
-//| Anytime trading, News time block, $1.50 BE lock, $20 alert, Btn |
+//| GoldFlip V6.2 - Forming Candle 80 Filter + 80 Points Lock        |
 //+------------------------------------------------------------------+
+#property copyright "V6.2"
+#property version   "6.20"
 #property strict
-#property version "4.00"
 
 input double LotSize = 0.01;
-input int SL_Points = 150;
-input int TP_Points = 600;
-input double BE_Trigger_Dollars = 1.5;
-input double BE_Lock_Dollars = 0.3;
-input int MaxTradesPerDay = 5;
-input bool UseNewsFilter = true;
-input int NewsStartHourGMT = 12;
-input int NewsEndHourGMT = 15;
-input double WithdrawAlertAt = 20.0;
+input int    SL_Points = 150;
+input int    TP_Points = 600;
+input double FormingFilter = 80;      // 80 = $0.80 forming body
+input double MomentumFilter = 25;     // 3-candle momentum
+input double LockAt_Points = 80;      // lock when +80 points profit
+input double LockTo_Points = 20;      // lock to +20 points
+input int    MaxTradesPerDay = 3;
 
-int handle_ema9, handle_ema21, handle_rsi;
-int trades_today = 0;
-datetime last_day = 0;
-bool is_on = true;
-bool alert_sent = false;
-double start_balance = 0.0;
+int      trades_today=0;
+datetime last_day=0;
+bool     is_on=true;
+double   start_balance=0;
 
 //+------------------------------------------------------------------+
-int OnInit()
-{
-   handle_ema9 = iMA(_Symbol, PERIOD_M5, 9, 0, MODE_EMA, PRICE_CLOSE);
-   handle_ema21 = iMA(_Symbol, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE);
-   handle_rsi = iRSI(_Symbol, PERIOD_M1, 14, PRICE_CLOSE);
-   if(handle_ema9==INVALID_HANDLE || handle_ema21==INVALID_HANDLE || handle_rsi==INVALID_HANDLE)
-      return(INIT_FAILED);
-   start_balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   ObjectCreate(0, "START_STOP", OBJ_BUTTON, 0, 0, 0);
-   ObjectSetInteger(0, "START_STOP", OBJPROP_XDISTANCE, 20);
-   ObjectSetInteger(0, "START_STOP", OBJPROP_YDISTANCE, 20);
-   ObjectSetInteger(0, "START_STOP", OBJPROP_XSIZE, 120);
-   ObjectSetInteger(0, "START_STOP", OBJPROP_YSIZE, 35);
-   ObjectSetString(0, "START_STOP", OBJPROP_TEXT, "STOP EA");
-   ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, clrLimeGreen);
-   ObjectSetInteger(0, "START_STOP", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   return(INIT_SUCCEEDED);
-}
-
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason)
-{
-   ObjectDelete(0, "START_STOP");
-}
-
-//+------------------------------------------------------------------+
-void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
-{
-   if(id==CHARTEVENT_OBJECT_CLICK && sparam=="START_STOP")
-   {
-      is_on =!is_on;
-      ObjectSetString(0, "START_STOP", OBJPROP_TEXT, is_on? "STOP EA" : "START EA");
-      ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, is_on? clrLimeGreen : clrRed);
-      Print(is_on? "EA RESUMED" : "EA PAUSED by button");
-   }
-}
-
-//+------------------------------------------------------------------+
-bool IsNewsBlocked()
-{
-   if(!UseNewsFilter) return false;
-   MqlDateTime dt;
-   TimeToStruct(TimeGMT(), dt);
-   if(dt.hour >= NewsStartHourGMT && dt.hour <= NewsEndHourGMT)
-   {
-      if(dt.hour==NewsStartHourGMT && dt.min < 30) return false;
-      return true;
-   }
-   return false;
-}
-
+//| Filling for all brokers                                          |
 //+------------------------------------------------------------------+
 ENUM_ORDER_TYPE_FILLING GetFilling()
 {
-   int mode = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
-   if((mode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
-   if((mode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK) return ORDER_FILLING_FOK;
+   int mode=(int)SymbolInfoInteger(_Symbol,SYMBOL_FILLING_MODE);
+   if((mode & SYMBOL_FILLING_IOC)==SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
+   if((mode & SYMBOL_FILLING_FOK)==SYMBOL_FILLING_FOK) return ORDER_FILLING_FOK;
    return ORDER_FILLING_RETURN;
 }
 
 //+------------------------------------------------------------------+
-bool ModifySL(ulong ticket, double new_sl, double current_tp)
+//| Dashboard                                                        |
+//+------------------------------------------------------------------+
+void CreateDashboard()
 {
-   MqlTradeRequest req;
-   MqlTradeResult res;
-   ZeroMemory(req);
-   ZeroMemory(res);
-   req.action = TRADE_ACTION_SLTP;
-   req.position = ticket;
-   req.symbol = _Symbol;
-   req.sl = new_sl;
-   req.tp = current_tp;
-   req.type_filling = GetFilling();
-   req.deviation = 30;
-   if(!OrderSend(req, res))
+   ObjectCreate(0,"BG",OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,"BG",OBJPROP_XDISTANCE,10);
+   ObjectSetInteger(0,"BG",OBJPROP_YDISTANCE,10);
+   ObjectSetInteger(0,"BG",OBJPROP_XSIZE,240);
+   ObjectSetInteger(0,"BG",OBJPROP_YSIZE,280);
+   ObjectSetInteger(0,"BG",OBJPROP_BGCOLOR,C'18,18,18');
+   ObjectSetInteger(0,"BG",OBJPROP_BORDER_TYPE,BORDER_FLAT);
+
+   ObjectCreate(0,"TITLE",OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,"TITLE",OBJPROP_XDISTANCE,20);
+   ObjectSetInteger(0,"TITLE",OBJPROP_YDISTANCE,18);
+   ObjectSetInteger(0,"TITLE",OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,"TITLE",OBJPROP_COLOR,clrLime);
+   ObjectSetString(0,"TITLE",OBJPROP_TEXT,"● CONNECTED - V6.2 80 LOCK");
+   ObjectSetInteger(0,"TITLE",OBJPROP_FONTSIZE,9);
+
+   for(int i=0;i<4;i++)
    {
-      Print("ModifySL failed: ", res.retcode);
-      return false;
+      string n="L"+IntegerToString(i);
+      ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+      ObjectSetInteger(0,n,OBJPROP_XDISTANCE,20);
+      ObjectSetInteger(0,n,OBJPROP_YDISTANCE,50+i*18);
+      ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+      ObjectSetInteger(0,n,OBJPROP_COLOR,clrWhite);
+      ObjectSetInteger(0,n,OBJPROP_FONTSIZE,8);
    }
-   return true;
+
+   ObjectCreate(0,"START_BTN",OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,"START_BTN",OBJPROP_XDISTANCE,20);
+   ObjectSetInteger(0,"START_BTN",OBJPROP_YDISTANCE,135);
+   ObjectSetInteger(0,"START_BTN",OBJPROP_XSIZE,100);
+   ObjectSetInteger(0,"START_BTN",OBJPROP_YSIZE,35);
+   ObjectSetString(0,"START_BTN",OBJPROP_TEXT,"START");
+   ObjectSetInteger(0,"START_BTN",OBJPROP_BGCOLOR,clrLimeGreen);
+   ObjectSetInteger(0,"START_BTN",OBJPROP_COLOR,clrBlack);
+
+   ObjectCreate(0,"STOP_BTN",OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,"STOP_BTN",OBJPROP_XDISTANCE,130);
+   ObjectSetInteger(0,"STOP_BTN",OBJPROP_YDISTANCE,135);
+   ObjectSetInteger(0,"STOP_BTN",OBJPROP_XSIZE,100);
+   ObjectSetInteger(0,"STOP_BTN",OBJPROP_YSIZE,35);
+   ObjectSetString(0,"STOP_BTN",OBJPROP_TEXT,"STOPPER");
+   ObjectSetInteger(0,"STOP_BTN",OBJPROP_BGCOLOR,clrRed);
+   ObjectSetInteger(0,"STOP_BTN",OBJPROP_COLOR,clrWhite);
+
+   ObjectCreate(0,"STATUS",OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,"STATUS",OBJPROP_XDISTANCE,20);
+   ObjectSetInteger(0,"STATUS",OBJPROP_YDISTANCE,190);
+   ObjectSetInteger(0,"STATUS",OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,"STATUS",OBJPROP_FONTSIZE,8);
+
+   ObjectCreate(0,"MATH",OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,"MATH",OBJPROP_XDISTANCE,20);
+   ObjectSetInteger(0,"MATH",OBJPROP_YDISTANCE,215);
+   ObjectSetInteger(0,"MATH",OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,"MATH",OBJPROP_FONTSIZE,7);
+   ObjectSetInteger(0,"MATH",OBJPROP_COLOR,clrYellow);
 }
 
 //+------------------------------------------------------------------+
-void ManageTrades()
+int OnInit()
 {
-   double total_profit = AccountInfoDouble(ACCOUNT_EQUITY) - start_balance;
-   PrintFormat("PROGRESS | Equity: %.2f | Profit: %.2f | TradesToday: %d/%d | Positions: %d | NewsBlock: %s | EA: %s",
-               AccountInfoDouble(ACCOUNT_EQUITY), total_profit, trades_today, MaxTradesPerDay,
-               PositionsTotal(), IsNewsBlocked()? "YES" : "NO", is_on? "ON" : "OFF");
-   if(total_profit >= WithdrawAlertAt &&!alert_sent)
+   start_balance=AccountInfoDouble(ACCOUNT_BALANCE);
+   CreateDashboard();
+   return(INIT_SUCCEEDED);
+}
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   ObjectDelete(0,"BG");
+   ObjectDelete(0,"TITLE");
+   for(int i=0;i<4;i++) ObjectDelete(0,"L"+IntegerToString(i));
+   ObjectDelete(0,"START_BTN");
+   ObjectDelete(0,"STOP_BTN");
+   ObjectDelete(0,"STATUS");
+   ObjectDelete(0,"MATH");
+}
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id==CHARTEVENT_OBJECT_CLICK)
    {
-      Alert("WITHDRAW NOW! Profit hit $", DoubleToString(total_profit,2));
-      Print(">>> WITHDRAW $", DoubleToString(total_profit,2), " NOW - SL still protecting capital <<<");
-      alert_sent = true;
+      if(sparam=="START_BTN") is_on=true;
+      if(sparam=="STOP_BTN")  is_on=false;
    }
-   if(total_profit < (WithdrawAlertAt - 2.0))
-      alert_sent = false;
-   for(int i=0; i<PositionsTotal(); i++)
+}
+//+------------------------------------------------------------------+
+bool ModifySL(ulong ticket,double new_sl,double tp)
+{
+   MqlTradeRequest req;
+   MqlTradeResult  res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+   req.action=TRADE_ACTION_SLTP;
+   req.position=ticket;
+   req.symbol=_Symbol;
+   req.sl=new_sl;
+   req.tp=tp;
+   req.type_filling=GetFilling();
+   req.deviation=30;
+   return OrderSend(req,res);
+}
+//+------------------------------------------------------------------+
+void Manage()
+{
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq=AccountInfoDouble(ACCOUNT_EQUITY);
+
+   ObjectSetString(0,"L0",OBJPROP_TEXT,"Balance: "+DoubleToString(bal,2));
+   ObjectSetString(0,"L1",OBJPROP_TEXT,"Equity: "+DoubleToString(eq,2));
+   ObjectSetString(0,"L2",OBJPROP_TEXT,"Profit: "+DoubleToString(eq-start_balance,2)+" USD");
+   ObjectSetString(0,"L3",OBJPROP_TEXT,"Trades: "+IntegerToString(trades_today)+"/"+IntegerToString(MaxTradesPerDay)+" Pos: "+IntegerToString(PositionsTotal()));
+   ObjectSetString(0,"STATUS",OBJPROP_TEXT,"Bot: "+(is_on?"RUNNING":"PAUSED"));
+   ObjectSetInteger(0,"STATUS",OBJPROP_COLOR,is_on?clrLime:clrRed);
+
+   for(int i=0;i<PositionsTotal();i++)
    {
-      string sym = PositionGetSymbol(i);
-      if(sym!= _Symbol) continue;
-      ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
-      double profit = PositionGetDouble(POSITION_PROFIT);
-      double price_open = PositionGetDouble(POSITION_PRICE_OPEN);
-      double curr_sl = PositionGetDouble(POSITION_SL);
-      double curr_tp = PositionGetDouble(POSITION_TP);
-      long type = PositionGetInteger(POSITION_TYPE);
-      if(profit >= BE_Trigger_Dollars)
+      string sym=PositionGetSymbol(i);
+      if(sym!=_Symbol) continue;
+      ulong  ticket=(ulong)PositionGetInteger(POSITION_TICKET);
+      double open=PositionGetDouble(POSITION_PRICE_OPEN);
+      double curr_sl=PositionGetDouble(POSITION_SL);
+      double curr_tp=PositionGetDouble(POSITION_TP);
+      long   type=PositionGetInteger(POSITION_TYPE);
+      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+
+      double points_profit=0.0;
+      if(type==POSITION_TYPE_BUY) points_profit=(bid-open)/_Point/10.0;
+      else points_profit=(open-ask)/_Point/10.0;
+
+      ObjectSetString(0,"MATH",OBJPROP_TEXT,"PF: "+DoubleToString(points_profit,1)+" / Lock "+DoubleToString(LockAt_Points,0));
+
+      if(points_profit>=LockAt_Points)
       {
-         double new_sl = 0.0;
-         if(type == POSITION_TYPE_BUY)
-         {
-            new_sl = price_open + 0.20;
-            if(new_sl > curr_sl)
-            {
-               bool ok = ModifySL(ticket, new_sl, curr_tp);
-               if(!ok) Print("BE Buy failed");
-            }
-         }
-         else if(type == POSITION_TYPE_SELL)
-         {
-            new_sl = price_open - 0.20;
-            if(new_sl < curr_sl || curr_sl==0.0)
-            {
-               bool ok = ModifySL(ticket, new_sl, curr_tp);
-               if(!ok) Print("BE Sell failed");
-            }
-         }
+         double new_sl=0.0;
+         if(type==POSITION_TYPE_BUY) new_sl=open+LockTo_Points*_Point*10.0;
+         else new_sl=open-LockTo_Points*_Point*10.0;
+
+         if(type==POSITION_TYPE_BUY && new_sl>curr_sl) ModifySL(ticket,new_sl,curr_tp);
+         if(type==POSITION_TYPE_SELL && (new_sl<curr_sl || curr_sl==0.0)) ModifySL(ticket,new_sl,curr_tp);
       }
    }
 }
-
 //+------------------------------------------------------------------+
-bool OpenTrade(ENUM_ORDER_TYPE order_type)
+bool OpenTrade(ENUM_ORDER_TYPE otype)
 {
-   double price = (order_type==ORDER_TYPE_BUY)? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double sl = (order_type==ORDER_TYPE_BUY)? price - SL_Points * _Point * 10 : price + SL_Points * _Point * 10;
-   double tp = (order_type==ORDER_TYPE_BUY)? price + TP_Points * _Point * 10 : price - TP_Points * _Point * 10;
+   double price=0.0;
+   if(otype==ORDER_TYPE_BUY) price=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   else price=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+
+   double sl=0.0,tp=0.0;
+   if(otype==ORDER_TYPE_BUY)
+   {
+      sl=price-SL_Points*_Point*10.0;
+      tp=price+TP_Points*_Point*10.0;
+   }
+   else
+   {
+      sl=price+SL_Points*_Point*10.0;
+      tp=price-TP_Points*_Point*10.0;
+   }
+
    MqlTradeRequest req;
-   MqlTradeResult res;
+   MqlTradeResult  res;
    ZeroMemory(req);
    ZeroMemory(res);
-   req.action = TRADE_ACTION_DEAL;
-   req.symbol = _Symbol;
-   req.volume = LotSize;
-   req.type = order_type;
-   req.price = price;
-   req.sl = sl;
-   req.tp = tp;
-   req.deviation = 30;
-   req.magic = 1010;
-   req.type_filling = GetFilling();
-   if(!OrderSend(req, res))
+   req.action=TRADE_ACTION_DEAL;
+   req.symbol=_Symbol;
+   req.volume=LotSize;
+   req.type=otype;
+   req.price=price;
+   req.sl=sl;
+   req.tp=tp;
+   req.deviation=30;
+   req.magic=6200;
+   req.type_filling=GetFilling();
+
+   if(!OrderSend(req,res))
    {
-      Print("OrderSend failed: ", res.retcode);
+      Print("Open failed ",res.retcode);
       return false;
    }
    trades_today++;
-   Print("Trade opened. Ticket: ", res.order, " Today count: ", trades_today);
    return true;
 }
-
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   ManageTrades();
+   Manage();
    if(!is_on) return;
-   MqlDateTime dt;
-   TimeToStruct(TimeGMT(), dt);
-   MqlDateTime dt_last;
-   TimeToStruct(last_day, dt_last);
-   if(last_day==0 || dt.day!=dt_last.day)
+
+   MqlDateTime dt; TimeToStruct(TimeGMT(),dt);
+   MqlDateTime dl; TimeToStruct(last_day,dl);
+   if(last_day==0 || dt.day!=dl.day)
    {
-      trades_today = 0;
-      last_day = TimeGMT();
+      trades_today=0;
+      last_day=TimeGMT();
    }
-   if(trades_today >= MaxTradesPerDay) return;
-   if(IsNewsBlocked()) return;
-   if(PositionsTotal() > 0) return;
-   double ema9_buf[];
-   double ema21_buf[];
-   double rsi_buf[];
-   ArraySetAsSeries(ema9_buf,true);
-   ArraySetAsSeries(ema21_buf,true);
-   ArraySetAsSeries(rsi_buf,true);
-   if(CopyBuffer(handle_ema9,0,0,2,ema9_buf)!=2) return;
-   if(CopyBuffer(handle_ema21,0,0,2,ema21_buf)!=2) return;
-   if(CopyBuffer(handle_rsi,0,0,2,rsi_buf)!=2) return;
-   double m1_close = iClose(_Symbol, PERIOD_M1, 1);
-   bool uptrend = ema9_buf[0] > ema21_buf[0];
-   bool downtrend = ema9_buf[0] < ema21_buf[0];
-   if(uptrend && m1_close <= ema9_buf[0]+2.0 && rsi_buf[0]>=50.0 && rsi_buf[0]<=62.0)
-   {
-      bool ok = OpenTrade(ORDER_TYPE_BUY);
-      if(!ok) Print("Buy failed");
-   }
-   if(downtrend && m1_close >= ema9_buf[0]-2.0 && rsi_buf[0]>=38.0 && rsi_buf[0]<=50.0)
-   {
-      bool ok = OpenTrade(ORDER_TYPE_SELL);
-      if(!ok) Print("Sell failed");
-   }
+   if(trades_today>=MaxTradesPerDay) return;
+   if(PositionsTotal()>0) return;
+
+   double open_m1=iOpen(_Symbol,PERIOD_M1,0);
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double close0=iClose(_Symbol,PERIOD_M1,1);
+   double close3=iClose(_Symbol,PERIOD_M1,4);
+
+   if(open_m1==0.0 || close0==0.0 || close3==0.0) return;
+
+   double body_now=(bid-open_m1)/_Point/10.0;
+   double mom=(close0-close3)/_Point/10.0;
+
+   ObjectSetString(0,"MATH",OBJPROP_TEXT,"Body: "+DoubleToString(body_now,1)+" Mom: "+DoubleToString(mom,1));
+
+   bool bull=(body_now>FormingFilter && mom>MomentumFilter);
+   bool bear=(body_now<-FormingFilter && mom<-MomentumFilter);
+
+   if(bull) OpenTrade(ORDER_TYPE_BUY);
+   if(bear) OpenTrade(ORDER_TYPE_SELL);
 }
 //+------------------------------------------------------------------+
