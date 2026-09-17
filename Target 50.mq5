@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| Gold $50 Tonight - Lock + Green Hold + Reversal Protect + Button |
+//| Gold $50 NonStop - 30 MIN UPDATE - Anytime Any Day |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -7,15 +7,17 @@
 input double Lots = 0.01;
 input int MagicNumber = 20260920;
 input int MaxTrades = 1;
-input int FirstTargetPoints = 80; // lock
+input int FirstTargetPoints = 80;
 input int StopLossPoints = 150;
-input int SweepThresholdPoints = 100;
-input double MaxDailyLossDollars = 3.0;
-input double DailyProfitTarget = 50.0; // Tonight target
+input int SweepThresholdPoints = 50;
+input double MaxDailyLossDollars = 1000.0; // disabled for nonstop
+input double DailyProfitTarget = 50.0; // each $50 block
+input int SR_Lookback_M5 = 24;
+input int SR_Update_Seconds = 1800; // 30 MIN
 
 CTrade trade;
 int h1_fast, h1_slow, m1_fast, m1_slow, m1_rsi;
-datetime lastM15Time=0;
+datetime lastSRUpdate=0;
 bool TradingEnabled=true;
 enum STATE {WAIT_SWEEP,WAIT_CONFIRM};
 STATE currentState=WAIT_SWEEP;
@@ -25,8 +27,8 @@ double ResLevel=0, SupLevel=0;
 double dailyRealized=0;
 datetime lastDay=0;
 double dayStartBalance=0;
+int totalBlocksHit=0;
 
-//+------------------------------------------------------------------+
 int OnInit()
 {
    h1_fast=iMA(_Symbol,PERIOD_H1,50,0,MODE_EMA,PRICE_CLOSE);
@@ -37,12 +39,14 @@ int OnInit()
    if(h1_fast==INVALID_HANDLE || h1_slow==INVALID_HANDLE || m1_fast==INVALID_HANDLE || m1_slow==INVALID_HANDLE || m1_rsi==INVALID_HANDLE)
       return(INIT_FAILED);
    trade.SetExpertMagicNumber(MagicNumber);
-   EventSetTimer(300);
+   EventSetTimer(60);
    CreateButton();
    lastDay=iTime(_Symbol,PERIOD_D1,0);
    dayStartBalance=AccountInfoDouble(ACCOUNT_BALANCE);
    dailyRealized=0;
-   PrintFormat("$50 TONIGHT STARTED | Target=$%.2f | Lock=%d | Magic=%d",DailyProfitTarget,FirstTargetPoints,MagicNumber);
+   CalculateSR();
+   lastSRUpdate=TimeCurrent();
+   PrintFormat("NONSTOP $50 STARTED | Target per block $%.2f | 30MIN UPDATE",DailyProfitTarget);
    return(INIT_SUCCEEDED);
 }
 void OnDeinit(const int reason)
@@ -57,49 +61,48 @@ void OnDeinit(const int reason)
    IndicatorRelease(h1_fast); IndicatorRelease(h1_slow);
    IndicatorRelease(m1_fast); IndicatorRelease(m1_slow); IndicatorRelease(m1_rsi);
 }
-//+------------------------------------------------------------------+
-void OnTimer(){ PrintProgress("TIMER"); UpdateDrawings(); }
-
+void OnTimer()
+{
+   if(TimeCurrent() - lastSRUpdate >= SR_Update_Seconds)
+   {
+      CalculateSR();
+      lastSRUpdate=TimeCurrent();
+      PrintProgress("30MIN UPDATE");
+   }
+   UpdateDrawings();
+}
 void OnTick()
 {
    CheckNewDay();
    double floating=GetFloatingProfit();
    double totalToday=dailyRealized+floating;
-   double progress=DailyProfitTarget>0? totalToday/DailyProfitTarget*100:0;
 
-   // $50 TARGET HIT
+   // NONSTOP MODE 2: HIT $50 -> RESTART
    if(totalToday >= DailyProfitTarget)
    {
-      CloseAll("TARGET $50 HIT");
-      TradingEnabled=false;
-      UpdateButton();
-      PrintFormat("!!! $50 TARGET REACHED $%.2f -> STOP FOR TONIGHT!!!",totalToday);
-      Comment(StringFormat("$$ TARGET $50 DONE $%.2f $$\nSTOPPED FOR TONIGHT",totalToday));
+      CloseAll(StringFormat("BLOCK %d TARGET $50 HIT", totalBlocksHit+1));
+      totalBlocksHit++;
+      dailyRealized=0;
+      dayStartBalance=AccountInfoDouble(ACCOUNT_BALANCE);
+      lastDay=iTime(_Symbol,PERIOD_D1,0);
+      PrintFormat("!!! BLOCK %d $50 DONE $%.2f -> STARTING BLOCK %d NONSTOP!!!",totalBlocksHit,totalToday,totalBlocksHit+1);
+      UpdateDrawings();
       return;
    }
 
-   if(dailyRealized <= -MaxDailyLossDollars)
-   {
-      TradingEnabled=false; UpdateButton(); return;
-   }
    if(!TradingEnabled) { UpdateDrawings(); return; }
    if(CountTrades() >= MaxTrades){ ManageTrades(); UpdateDrawings(); return; }
-
-   datetime m15t=iTime(_Symbol,PERIOD_M15,0);
-   if(m15t!=lastM15Time){ lastM15Time=m15t; CalculateSR(); UpdateDrawings(); PrintProgress("NEW M15"); }
-
+   if(TimeCurrent() - lastSRUpdate >= SR_Update_Seconds){ CalculateSR(); lastSRUpdate=TimeCurrent(); }
    int bias=GetH1Bias(); if(bias==0){ UpdateDrawings(); return; }
-
    if(currentState==WAIT_SWEEP) CheckForSweep(bias);
    else if(currentState==WAIT_CONFIRM)
    {
-      if(TimeCurrent()-lastSweepTime>3600){ currentState=WAIT_SWEEP; lastSweepDir=0; Print("TIMEOUT -> WAIT_SWEEP"); }
+      if(TimeCurrent()-lastSweepTime>3600){ currentState=WAIT_SWEEP; lastSweepDir=0; }
       else CheckForConfirmation(bias);
    }
    ManageTrades();
    UpdateDrawings();
 }
-//+------------------------------------------------------------------+
 int GetH1Bias()
 {
    double f[1],s[1];
@@ -110,8 +113,9 @@ int GetH1Bias()
 void CalculateSR()
 {
    double hi=-1, lo=9999999;
-   for(int i=1;i<=40;i++){ double h=iHigh(_Symbol,PERIOD_M15,i); double l=iLow(_Symbol,PERIOD_M15,i); if(h>hi) hi=h; if(l<lo) lo=l; }
+   for(int i=1;i<=SR_Lookback_M5;i++){ double h=iHigh(_Symbol,PERIOD_M5,i); double l=iLow(_Symbol,PERIOD_M5,i); if(h>hi) hi=h; if(l<lo) lo=l; }
    ResLevel=hi; SupLevel=lo;
+   PrintFormat("SR UPDATED 30MIN: RES=%.2f SUP=%.2f Range=%.2f",ResLevel,SupLevel,ResLevel-SupLevel);
 }
 void UpdateDrawings()
 {
@@ -124,11 +128,9 @@ void UpdateDrawings()
    double totalToday=dailyRealized+floating;
    double pct=DailyProfitTarget>0? totalToday/DailyProfitTarget*100:0;
    if(pct<0) pct=0; if(pct>100) pct=100;
-
    DrawProgress(pct, totalToday);
-
-   Comment(StringFormat(" $50 TONIGHT | H1:%s\nRES:%.2f SUP:%.2f GREEN TARGET\nSTATE:%s | Trades:%d\nTODAY: $%.2f / $%.2f (%.1f%%) | Float:$%.2f\nLock +%d pts -> hold to green | Reversal protect ON",
-           bTxt,ResLevel,SupLevel,sTxt,CountTrades(),totalToday,DailyProfitTarget,pct,floating,FirstTargetPoints));
+   Comment(StringFormat(" $50 NONSTOP 30MIN | H1:%s\nRES:%.2f SUP:%.2f Range:%.2f\nSTATE:%s | Next %d sec\nBLOCK %d: $%.2f / $%.2f (%.1f%%) | Float:$%.2f\nTotal $50 Blocks Done Today: %d",
+           bTxt,ResLevel,SupLevel,ResLevel-SupLevel,sTxt, SR_Update_Seconds - (int)(TimeCurrent()-lastSRUpdate), totalBlocksHit+1, totalToday,DailyProfitTarget,pct,floating,totalBlocksHit));
 }
 void DrawHLine(string name,double price,color col)
 {
@@ -137,7 +139,6 @@ void DrawHLine(string name,double price,color col)
    ObjectSetDouble(0,name,OBJPROP_PRICE,price);
    ObjectSetInteger(0,name,OBJPROP_COLOR,col);
    ObjectSetInteger(0,name,OBJPROP_WIDTH,2);
-   ObjectSetInteger(0,name,OBJPROP_BACK,false);
 }
 void DrawProgress(double pct, double total)
 {
@@ -148,25 +149,14 @@ void DrawProgress(double pct, double total)
    color c= pct>=100?clrLime: pct>=50?clrGold:clrDodgerBlue;
    ObjectSetInteger(0,bar,OBJPROP_BGCOLOR,c);
 }
-//+------------------------------------------------------------------+
 void CheckForSweep(int bias)
 {
    double m5_high=iHigh(_Symbol,PERIOD_M5,0);
    double m5_low=iLow(_Symbol,PERIOD_M5,0);
    double m5_close=iClose(_Symbol,PERIOD_M5,0);
    double thresh=SweepThresholdPoints*_Point;
-   if(bias==1 && m5_low < SupLevel - thresh && m5_close > SupLevel)
-   {
-      lastSweepDir=1; lastSweepTime=TimeCurrent(); currentState=WAIT_CONFIRM;
-      DrawHLine("SWEEP_LEVEL",m5_low,clrYellow);
-      PrintFormat("SWEEP SUP Low=%.2f Close=%.2f BUY",m5_low,m5_close);
-   }
-   if(bias==-1 && m5_high > ResLevel + thresh && m5_close < ResLevel)
-   {
-      lastSweepDir=-1; lastSweepTime=TimeCurrent(); currentState=WAIT_CONFIRM;
-      DrawHLine("SWEEP_LEVEL",m5_high,clrYellow);
-      PrintFormat("SWEEP RES High=%.2f Close=%.2f SELL",m5_high,m5_close);
-   }
+   if(bias==1 && m5_low < SupLevel - thresh && m5_close > SupLevel){ lastSweepDir=1; lastSweepTime=TimeCurrent(); currentState=WAIT_CONFIRM; DrawHLine("SWEEP_LEVEL",m5_low,clrYellow); }
+   if(bias==-1 && m5_high > ResLevel + thresh && m5_close < ResLevel){ lastSweepDir=-1; lastSweepTime=TimeCurrent(); currentState=WAIT_CONFIRM; DrawHLine("SWEEP_LEVEL",m5_high,clrYellow); }
 }
 void CheckForConfirmation(int bias)
 {
@@ -189,10 +179,8 @@ void OpenTrade(ENUM_ORDER_TYPE type)
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    double sl=(type==ORDER_TYPE_BUY)? bid-StopLossPoints*_Point : ask+StopLossPoints*_Point;
-   bool ok=false;
-   if(type==ORDER_TYPE_BUY) ok=trade.Buy(Lots,_Symbol,0,sl,0,"$50 TONIGHT BUY");
-   else ok=trade.Sell(Lots,_Symbol,0,sl,0,"$50 TONIGHT SELL");
-   if(ok) PrintFormat("EXECUTED: %s SL=%d LOCK +%d hold green | Trades=%d",EnumToString(type),StopLossPoints,FirstTargetPoints,CountTrades()+1);
+   if(type==ORDER_TYPE_BUY) trade.Buy(Lots,_Symbol,0,sl,0,"$50 NONSTOP BUY");
+   else trade.Sell(Lots,_Symbol,0,sl,0,"$50 NONSTOP SELL");
 }
 void ManageTrades()
 {
@@ -208,96 +196,26 @@ void ManageTrades()
       ulong ticket=(ulong)PositionGetInteger(POSITION_TICKET);
       double pts=(pType==POSITION_TYPE_BUY)? (curr-open)/_Point : (open-curr)/_Point;
       bool isBuy=(pType==POSITION_TYPE_BUY);
-
-      // LOCK at +80 without closing
-      if(pts>=FirstTargetPoints)
-      {
-         double be=isBuy? open+20*_Point : open-20*_Point;
-         bool need=(isBuy && (sl<be || sl==0)) || (!isBuy && (sl>be || sl==0));
-         if(need){ trade.PositionModify(ticket,be,0); PrintFormat("LOCKED +%.0f pts SL->BE+20 HOLD GREEN %.2f",pts,isBuy?ResLevel:SupLevel); }
-      }
-
-      // REVERSAL PROTECTION - if H1 flips after lock, protect profit
-      if(pts>=FirstTargetPoints)
-      {
-         if(isBuy && bias==-1){ if(trade.PositionClose(ticket)) PrintFormat("REVERSAL CLOSE BUY bias SELL pts %.0f",pts); continue; }
-         if(!isBuy && bias==1){ if(trade.PositionClose(ticket)) PrintFormat("REVERSAL CLOSE SELL bias BUY pts %.0f",pts); continue; }
-      }
-
-      // CLOSE at GREEN line
-      if(!isBuy)
-      {
-         if( (curr <= SupLevel+50*_Point && pts>=100) || pts>=350 ){ if(trade.PositionClose(ticket)) PrintFormat("GREEN HIT SELL %.2f SUP %.2f pts %.0f",curr,SupLevel,pts); }
-      }
-      else
-      {
-         if( (curr >= ResLevel-50*_Point && pts>=100) || pts>=350 ){ if(trade.PositionClose(ticket)) PrintFormat("GREEN HIT BUY %.2f RES %.2f pts %.0f",curr,ResLevel,pts); }
-      }
+      if(pts>=FirstTargetPoints){ double be=isBuy? open+20*_Point : open-20*_Point; bool need=(isBuy && (sl<be || sl==0)) || (!isBuy && (sl>be || sl==0)); if(need){ trade.PositionModify(ticket,be,0); } }
+      if(pts>=FirstTargetPoints){ if(isBuy && bias==-1){ trade.PositionClose(ticket); continue; } if(!isBuy && bias==1){ trade.PositionClose(ticket); continue; } }
+      if(!isBuy){ if( (curr <= SupLevel+50*_Point && pts>=100) || pts>=350 ){ trade.PositionClose(ticket); } }
+      else { if( (curr >= ResLevel-50*_Point && pts>=100) || pts>=350 ){ trade.PositionClose(ticket); } }
    }
 }
 int CountTrades(){ int c=0; for(int i=0;i<PositionsTotal();i++){ if(PositionGetSymbol(i)!=_Symbol) continue; if((long)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue; c++; } return c; }
 double GetFloatingProfit(){ double p=0; for(int i=0;i<PositionsTotal();i++){ if(PositionGetSymbol(i)!=_Symbol) continue; if((long)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue; p+=PositionGetDouble(POSITION_PROFIT); } return p; }
-void CloseAll(string reason)
-{
-   for(int i=PositionsTotal()-1;i>=0;i--)
-   {
-      if(PositionGetSymbol(i)!=_Symbol) continue;
-      if((long)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
-      ulong ticket=(ulong)PositionGetInteger(POSITION_TICKET);
-      trade.PositionClose(ticket);
-   }
-   PrintFormat("CLOSE ALL: %s",reason);
-}
+void CloseAll(string reason){ for(int i=PositionsTotal()-1;i>=0;i--){ if(PositionGetSymbol(i)!=_Symbol) continue; if((long)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue; ulong ticket=(ulong)PositionGetInteger(POSITION_TICKET); trade.PositionClose(ticket); } PrintFormat("CLOSE ALL: %s",reason); }
 void CheckNewDay()
 {
    datetime d=iTime(_Symbol,PERIOD_D1,0);
-   if(d!=lastDay)
-   {
-      // calc yesterday realized from history
-      lastDay=d; dailyRealized=0; dayStartBalance=AccountInfoDouble(ACCOUNT_BALANCE);
-      Print("NEW DAY reset daily $0");
-   }
-   // update realized from history today
+   if(d!=lastDay){ lastDay=d; dailyRealized=0; totalBlocksHit=0; dayStartBalance=AccountInfoDouble(ACCOUNT_BALANCE); Print("NEW DAY - BLOCKS RESET 0"); }
    dailyRealized=0;
    HistorySelect(lastDay, TimeCurrent());
-   for(int i=0;i<HistoryDealsTotal();i++)
-   {
-      ulong ticket=HistoryDealGetTicket(i);
-      if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol) continue;
-      if((long)HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MagicNumber) continue;
-      dailyRealized+=HistoryDealGetDouble(ticket,DEAL_PROFIT);
-   }
+   for(int i=0;i<HistoryDealsTotal();i++){ ulong ticket=HistoryDealGetTicket(i); if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol) continue; if((long)HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MagicNumber) continue; dailyRealized+=HistoryDealGetDouble(ticket,DEAL_PROFIT); }
+   // In NONSTOP mode, if we already closed a block, history will show profit, so we cap it to current block only
+   if(dailyRealized >= DailyProfitTarget) dailyRealized = 0; // reset for next block if history still holds old
 }
-void PrintProgress(string src)
-{
-   double floating=GetFloatingProfit();
-   double total=dailyRealized+floating;
-   PrintFormat("[%s] Bias=%d RES=%.2f SUP=%.2f State=%s Today $%.2f/$%.2f (%.1f%%) Trades=%d",
-               src,GetH1Bias(),ResLevel,SupLevel,currentState==WAIT_SWEEP?"WAIT":"CONFIRM",total,DailyProfitTarget,DailyProfitTarget>0?total/DailyProfitTarget*100:0,CountTrades());
-}
-void CreateButton()
-{
-   if(ObjectFind(0,"BTN_STARTSTOP")>=0) ObjectDelete(0,"BTN_STARTSTOP");
-   ObjectCreate(0,"BTN_STARTSTOP",OBJ_BUTTON,0,0,0);
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_XDISTANCE,20);
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_YDISTANCE,20);
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_XSIZE,140);
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_YSIZE,36);
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_CORNER,CORNER_LEFT_UPPER);
-   UpdateButton();
-}
-void UpdateButton()
-{
-   ObjectSetString(0,"BTN_STARTSTOP",OBJPROP_TEXT,TradingEnabled?"STOP TRADING":"START TRADING");
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_BGCOLOR,TradingEnabled?clrLimeGreen:clrTomato);
-   ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_COLOR,clrBlack);
-}
-void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
-{
-   if(id==CHARTEVENT_OBJECT_CLICK && sparam=="BTN_STARTSTOP")
-   {
-      TradingEnabled=!TradingEnabled; UpdateButton();
-      PrintFormat("BUTTON: Trading %s",TradingEnabled?"ON":"OFF"); ChartRedraw();
-   }
-}
-//+------------------------------------------------------------------+
+void PrintProgress(string src){ double floating=GetFloatingProfit(); double total=dailyRealized+floating; PrintFormat("[%s] Bias=%d RES=%.2f SUP=%.2f Range=%.2f State=%s Block=%d Today $%.2f/$%.2f", src,GetH1Bias(),ResLevel,SupLevel,ResLevel-SupLevel,currentState==WAIT_SWEEP?"WAIT":"CONFIRM",totalBlocksHit+1,total,DailyProfitTarget); }
+void CreateButton(){ if(ObjectFind(0,"BTN_STARTSTOP")>=0) ObjectDelete(0,"BTN_STARTSTOP"); ObjectCreate(0,"BTN_STARTSTOP",OBJ_BUTTON,0,0,0); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_XDISTANCE,20); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_YDISTANCE,20); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_XSIZE,140); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_YSIZE,36); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_CORNER,CORNER_LEFT_UPPER); UpdateButton(); }
+void UpdateButton(){ ObjectSetString(0,"BTN_STARTSTOP",OBJPROP_TEXT,TradingEnabled?"STOP TRADING":"START TRADING"); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_BGCOLOR,TradingEnabled?clrLimeGreen:clrTomato); ObjectSetInteger(0,"BTN_STARTSTOP",OBJPROP_COLOR,clrBlack); }
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam){ if(id==CHARTEVENT_OBJECT_CLICK && sparam=="BTN_STARTSTOP"){ TradingEnabled=!TradingEnabled; UpdateButton(); ChartRedraw(); } }
