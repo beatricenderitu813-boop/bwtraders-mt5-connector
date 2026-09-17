@@ -1,9 +1,8 @@
 //+------------------------------------------------------------------+
-//| GoldFlip V4 - Clean Compile 0 Errors 0 Warnings |
-//| Anytime trading, News time block, $1.50 BE lock, $20 alert, Btn |
+//| GoldFlip V5 - 0 Errors 0 Warnings Final |
 //+------------------------------------------------------------------+
 #property strict
-#property version "4.00"
+#property version "5.00"
 
 input double LotSize = 0.01;
 input int SL_Points = 150;
@@ -12,7 +11,7 @@ input double BE_Trigger_Dollars = 1.5;
 input double BE_Lock_Dollars = 0.3;
 input int MaxTradesPerDay = 5;
 input bool UseNewsFilter = true;
-input int NewsStartHourGMT = 12; // block 12:30 - 15:30 GMT typical USD news
+input int NewsStartHourGMT = 12;
 input int NewsEndHourGMT = 15;
 input double WithdrawAlertAt = 20.0;
 
@@ -43,7 +42,6 @@ int OnInit()
    ObjectSetString(0, "START_STOP", OBJPROP_TEXT, "STOP EA");
    ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, clrLimeGreen);
    ObjectSetInteger(0, "START_STOP", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-
    return(INIT_SUCCEEDED);
 }
 
@@ -61,7 +59,6 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       is_on =!is_on;
       ObjectSetString(0, "START_STOP", OBJPROP_TEXT, is_on? "STOP EA" : "START EA");
       ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, is_on? clrLimeGreen : clrRed);
-      Print(is_on? "EA RESUMED" : "EA PAUSED by button");
    }
 }
 
@@ -71,7 +68,6 @@ bool IsNewsBlocked()
    if(!UseNewsFilter) return false;
    MqlDateTime dt;
    TimeToStruct(TimeGMT(), dt);
-   // Simple safe block: 12:30 - 15:30 GMT (USD news window)
    if(dt.hour >= NewsStartHourGMT && dt.hour <= NewsEndHourGMT)
    {
       if(dt.hour==NewsStartHourGMT && dt.min < 30) return false;
@@ -92,11 +88,7 @@ bool ModifySL(ulong ticket, double new_sl, double current_tp)
    req.symbol = _Symbol;
    req.sl = new_sl;
    req.tp = current_tp;
-   if(!OrderSend(req, res))
-   {
-      Print("ModifySL failed: ", res.retcode);
-      return false;
-   }
+   if(!OrderSend(req, res)) return false;
    return true;
 }
 
@@ -105,45 +97,39 @@ void ManageTrades()
 {
    double total_profit = AccountInfoDouble(ACCOUNT_EQUITY) - start_balance;
 
-   PrintFormat("PROGRESS | Equity: %.2f | Profit: %.2f | TradesToday: %d/%d | Positions: %d | NewsBlock: %s | EA: %s",
+   PrintFormat("PROGRESS | Equity: %.2f | Profit: %.2f | Trades: %d/%d | Pos: %d | News: %s | EA: %s",
                AccountInfoDouble(ACCOUNT_EQUITY), total_profit, trades_today, MaxTradesPerDay,
                PositionsTotal(), IsNewsBlocked()? "YES" : "NO", is_on? "ON" : "OFF");
 
    if(total_profit >= WithdrawAlertAt &&!alert_sent)
    {
-      Alert("WITHDRAW NOW! Profit hit $", DoubleToString(total_profit,2));
-      Print(">>> WITHDRAW $", DoubleToString(total_profit,2), " NOW - SL still protecting capital <<<");
+      Alert("WITHDRAW NOW! Profit $", DoubleToString(total_profit,2));
       alert_sent = true;
    }
-   if(total_profit < (WithdrawAlertAt - 2.0))
-      alert_sent = false;
+   if(total_profit < (WithdrawAlertAt - 2.0)) alert_sent = false;
 
    for(int i=0; i<PositionsTotal(); i++)
    {
       string sym = PositionGetSymbol(i);
       if(sym!= _Symbol) continue;
-
       ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
       double profit = PositionGetDouble(POSITION_PROFIT);
       double price_open = PositionGetDouble(POSITION_PRICE_OPEN);
       double curr_sl = PositionGetDouble(POSITION_SL);
       double curr_tp = PositionGetDouble(POSITION_TP);
-      long type = PositionGetInteger(POSITION_TYPE);
+      long ptype = PositionGetInteger(POSITION_TYPE);
 
       if(profit >= BE_Trigger_Dollars)
       {
-         double new_sl = 0.0;
-         if(type == POSITION_TYPE_BUY)
+         if(ptype == POSITION_TYPE_BUY)
          {
-            new_sl = price_open + 0.20;
-            if(new_sl > curr_sl)
-               ModifySL(ticket, new_sl, curr_tp);
+            double new_sl = price_open + 0.20;
+            if(new_sl > curr_sl) ModifySL(ticket, new_sl, curr_tp);
          }
-         else if(type == POSITION_TYPE_SELL)
+         else if(ptype == POSITION_TYPE_SELL)
          {
-            new_sl = price_open - 0.20;
-            if(new_sl < curr_sl || curr_sl==0.0)
-               ModifySL(ticket, new_sl, curr_tp);
+            double new_sl = price_open - 0.20;
+            if(new_sl < curr_sl || curr_sl==0.0) ModifySL(ticket, new_sl, curr_tp);
          }
       }
    }
@@ -171,13 +157,8 @@ bool OpenTrade(ENUM_ORDER_TYPE order_type)
    req.magic = 1010;
    req.type_filling = ORDER_FILLING_IOC;
 
-   if(!OrderSend(req, res))
-   {
-      Print("OrderSend failed: ", res.retcode);
-      return false;
-   }
+   if(!OrderSend(req, res)) return false;
    trades_today++;
-   Print("Trade opened. Ticket: ", res.order, " Today count: ", trades_today);
    return true;
 }
 
@@ -187,10 +168,11 @@ void OnTick()
    ManageTrades();
    if(!is_on) return;
 
-   MqlDateTime dt;
-   TimeToStruct(TimeGMT(), dt);
-   int day_now = dt.day;
-   if(last_day==0 || day_now!= TimeDay(last_day))
+   MqlDateTime dt_now, dt_last;
+   TimeToStruct(TimeGMT(), dt_now);
+   TimeToStruct(last_day, dt_last);
+
+   if(last_day==0 || dt_now.day!=dt_last.day)
    {
       trades_today = 0;
       last_day = TimeGMT();
@@ -200,13 +182,14 @@ void OnTick()
    if(IsNewsBlocked()) return;
    if(PositionsTotal() > 0) return;
 
-   double ema9_buf[2], ema21_buf[2], rsi_buf[2];
+   double ema9_buf[], ema21_buf[], rsi_buf[];
+   ArraySetAsSeries(ema9_buf, true);
+   ArraySetAsSeries(ema21_buf, true);
+   ArraySetAsSeries(rsi_buf, true);
+
    if(CopyBuffer(handle_ema9,0,0,2,ema9_buf)!=2) return;
    if(CopyBuffer(handle_ema21,0,0,2,ema21_buf)!=2) return;
    if(CopyBuffer(handle_rsi,0,0,2,rsi_buf)!=2) return;
-   ArraySetAsSeries(ema9_buf,true);
-   ArraySetAsSeries(ema21_buf,true);
-   ArraySetAsSeries(rsi_buf,true);
 
    double m1_close = iClose(_Symbol, PERIOD_M1, 1);
    bool uptrend = ema9_buf[0] > ema21_buf[0];
