@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//| GoldFlip V6 - Guaranteed 0 Errors 0 Warnings |
+//| GoldFlip FINAL - 0 Errors 0 Warnings |
 //+------------------------------------------------------------------+
 #property strict
-#property version "6.00"
+#property version "7.00"
 
 input double LotSize = 0.01;
 input int SL_Points = 150;
@@ -78,7 +78,8 @@ void Manage()
          {
             MqlTradeRequest rq; MqlTradeResult rs; ZeroMemory(rq); ZeroMemory(rs);
             rq.action=TRADE_ACTION_SLTP; rq.position=tk; rq.symbol=_Symbol; rq.sl=nsl; rq.tp=tp;
-            OrderSend(rq, rs);
+            bool ok = OrderSend(rq, rs);
+            if(!ok) Print("BE modify failed ", rs.retcode);
          }
       }
    }
