@@ -12,7 +12,7 @@ input double BE_Trigger_Dollars = 1.5;
 input double BE_Lock_Dollars = 0.3;
 input int MaxTradesPerDay = 5;
 input bool UseNewsFilter = true;
-input int NewsStartHourGMT = 12; // block 12:30 - 15:30 GMT typical USD news
+input int NewsStartHourGMT = 12;
 input int NewsEndHourGMT = 15;
 input double WithdrawAlertAt = 20.0;
 
@@ -29,12 +29,9 @@ int OnInit()
    handle_ema9 = iMA(_Symbol, PERIOD_M5, 9, 0, MODE_EMA, PRICE_CLOSE);
    handle_ema21 = iMA(_Symbol, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE);
    handle_rsi = iRSI(_Symbol, PERIOD_M1, 14, PRICE_CLOSE);
-
    if(handle_ema9==INVALID_HANDLE || handle_ema21==INVALID_HANDLE || handle_rsi==INVALID_HANDLE)
       return(INIT_FAILED);
-
    start_balance = AccountInfoDouble(ACCOUNT_BALANCE);
-
    ObjectCreate(0, "START_STOP", OBJ_BUTTON, 0, 0, 0);
    ObjectSetInteger(0, "START_STOP", OBJPROP_XDISTANCE, 20);
    ObjectSetInteger(0, "START_STOP", OBJPROP_YDISTANCE, 20);
@@ -43,7 +40,6 @@ int OnInit()
    ObjectSetString(0, "START_STOP", OBJPROP_TEXT, "STOP EA");
    ObjectSetInteger(0, "START_STOP", OBJPROP_BGCOLOR, clrLimeGreen);
    ObjectSetInteger(0, "START_STOP", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-
    return(INIT_SUCCEEDED);
 }
 
@@ -71,13 +67,21 @@ bool IsNewsBlocked()
    if(!UseNewsFilter) return false;
    MqlDateTime dt;
    TimeToStruct(TimeGMT(), dt);
-   // Simple safe block: 12:30 - 15:30 GMT (USD news window)
    if(dt.hour >= NewsStartHourGMT && dt.hour <= NewsEndHourGMT)
    {
       if(dt.hour==NewsStartHourGMT && dt.min < 30) return false;
       return true;
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFilling()
+{
+   int mode = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((mode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
+   if((mode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK) return ORDER_FILLING_FOK;
+   return ORDER_FILLING_RETURN;
 }
 
 //+------------------------------------------------------------------+
@@ -92,6 +96,8 @@ bool ModifySL(ulong ticket, double new_sl, double current_tp)
    req.symbol = _Symbol;
    req.sl = new_sl;
    req.tp = current_tp;
+   req.type_filling = GetFilling();
+   req.deviation = 30;
    if(!OrderSend(req, res))
    {
       Print("ModifySL failed: ", res.retcode);
@@ -104,11 +110,9 @@ bool ModifySL(ulong ticket, double new_sl, double current_tp)
 void ManageTrades()
 {
    double total_profit = AccountInfoDouble(ACCOUNT_EQUITY) - start_balance;
-
    PrintFormat("PROGRESS | Equity: %.2f | Profit: %.2f | TradesToday: %d/%d | Positions: %d | NewsBlock: %s | EA: %s",
                AccountInfoDouble(ACCOUNT_EQUITY), total_profit, trades_today, MaxTradesPerDay,
                PositionsTotal(), IsNewsBlocked()? "YES" : "NO", is_on? "ON" : "OFF");
-
    if(total_profit >= WithdrawAlertAt &&!alert_sent)
    {
       Alert("WITHDRAW NOW! Profit hit $", DoubleToString(total_profit,2));
@@ -117,19 +121,16 @@ void ManageTrades()
    }
    if(total_profit < (WithdrawAlertAt - 2.0))
       alert_sent = false;
-
    for(int i=0; i<PositionsTotal(); i++)
    {
       string sym = PositionGetSymbol(i);
       if(sym!= _Symbol) continue;
-
       ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
       double profit = PositionGetDouble(POSITION_PROFIT);
       double price_open = PositionGetDouble(POSITION_PRICE_OPEN);
       double curr_sl = PositionGetDouble(POSITION_SL);
       double curr_tp = PositionGetDouble(POSITION_TP);
       long type = PositionGetInteger(POSITION_TYPE);
-
       if(profit >= BE_Trigger_Dollars)
       {
          double new_sl = 0.0;
@@ -161,7 +162,6 @@ bool OpenTrade(ENUM_ORDER_TYPE order_type)
    double price = (order_type==ORDER_TYPE_BUY)? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double sl = (order_type==ORDER_TYPE_BUY)? price - SL_Points * _Point * 10 : price + SL_Points * _Point * 10;
    double tp = (order_type==ORDER_TYPE_BUY)? price + TP_Points * _Point * 10 : price - TP_Points * _Point * 10;
-
    MqlTradeRequest req;
    MqlTradeResult res;
    ZeroMemory(req);
@@ -175,8 +175,7 @@ bool OpenTrade(ENUM_ORDER_TYPE order_type)
    req.tp = tp;
    req.deviation = 30;
    req.magic = 1010;
-   req.type_filling = ORDER_FILLING_IOC;
-
+   req.type_filling = GetFilling();
    if(!OrderSend(req, res))
    {
       Print("OrderSend failed: ", res.retcode);
@@ -192,43 +191,35 @@ void OnTick()
 {
    ManageTrades();
    if(!is_on) return;
-
    MqlDateTime dt;
    TimeToStruct(TimeGMT(), dt);
    MqlDateTime dt_last;
    TimeToStruct(last_day, dt_last);
-
    if(last_day==0 || dt.day!=dt_last.day)
    {
       trades_today = 0;
       last_day = TimeGMT();
    }
-
    if(trades_today >= MaxTradesPerDay) return;
    if(IsNewsBlocked()) return;
    if(PositionsTotal() > 0) return;
-
    double ema9_buf[];
    double ema21_buf[];
    double rsi_buf[];
    ArraySetAsSeries(ema9_buf,true);
    ArraySetAsSeries(ema21_buf,true);
    ArraySetAsSeries(rsi_buf,true);
-
    if(CopyBuffer(handle_ema9,0,0,2,ema9_buf)!=2) return;
    if(CopyBuffer(handle_ema21,0,0,2,ema21_buf)!=2) return;
    if(CopyBuffer(handle_rsi,0,0,2,rsi_buf)!=2) return;
-
    double m1_close = iClose(_Symbol, PERIOD_M1, 1);
    bool uptrend = ema9_buf[0] > ema21_buf[0];
    bool downtrend = ema9_buf[0] < ema21_buf[0];
-
    if(uptrend && m1_close <= ema9_buf[0]+2.0 && rsi_buf[0]>=50.0 && rsi_buf[0]<=62.0)
    {
       bool ok = OpenTrade(ORDER_TYPE_BUY);
       if(!ok) Print("Buy failed");
    }
-
    if(downtrend && m1_close >= ema9_buf[0]-2.0 && rsi_buf[0]>=38.0 && rsi_buf[0]<=50.0)
    {
       bool ok = OpenTrade(ORDER_TYPE_SELL);
